@@ -3,6 +3,7 @@ package types
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -136,7 +137,7 @@ func (v Value) Serialize() ([]byte, error) {
 	case TypeFloat:
 		floatVal := v.Data.(float64)
 		floatBuf := make([]byte, 8)
-		binary.LittleEndian.PutUint64(floatBuf, uint64(floatVal))
+		binary.LittleEndian.PutUint64(floatBuf, math.Float64bits(floatVal))
 		buf = append(buf, floatBuf...)
 
 	case TypeDate:
@@ -193,7 +194,8 @@ func Deserialize(data []byte) (Value, int, error) {
 		if len(data) < offset+8 {
 			return Value{}, 0, fmt.Errorf("data too short for float")
 		}
-		floatVal := float64(binary.LittleEndian.Uint64(data[offset : offset+8]))
+		floatBits := binary.LittleEndian.Uint64(data[offset : offset+8])
+		floatVal := math.Float64frombits(floatBits)
 		return NewFloatValue(floatVal), offset + 8, nil
 
 	case TypeDate:

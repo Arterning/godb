@@ -153,3 +153,43 @@ func (p *Page) GetAllRows() ([][]byte, error) {
 
 	return rows, nil
 }
+
+// UpdateRow 更新指定索引的行数据（就地更新）
+func (p *Page) UpdateRow(index uint16, newRowData []byte) error {
+	if index >= p.RowCount {
+		return fmt.Errorf("row index out of range: %d", index)
+	}
+
+	// 找到目标行的偏移量
+	offset := 0
+	for i := uint16(0); i < index; i++ {
+		rowLen := binary.LittleEndian.Uint32(p.Data[offset : offset+4])
+		offset += 4 + int(rowLen)
+	}
+
+	// 读取旧行长度
+	oldRowLen := binary.LittleEndian.Uint32(p.Data[offset : offset+4])
+	newRowLen := uint32(len(newRowData))
+
+	// 检查新数据是否能放入同一位置
+	// 简化实现：只有在新数据长度 <= 旧数据长度时才能就地更新
+	if newRowLen > oldRowLen {
+		return fmt.Errorf("new row data is larger than old row data, cannot update in place")
+	}
+
+	// 更新行长度
+	binary.LittleEndian.PutUint32(p.Data[offset:offset+4], newRowLen)
+	offset += 4
+
+	// 更新行数据
+	copy(p.Data[offset:offset+int(newRowLen)], newRowData)
+
+	// 如果新数据更短，清空剩余空间（用 0 填充）
+	if newRowLen < oldRowLen {
+		for i := newRowLen; i < oldRowLen; i++ {
+			p.Data[offset+int(i)] = 0
+		}
+	}
+
+	return nil
+}

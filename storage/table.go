@@ -5,16 +5,31 @@ import (
 	"godb/types"
 )
 
+// RowID 行标识符（页 ID + 行索引）
+type RowID struct {
+	PageID   uint32
+	RowIndex uint16
+}
+
 // Row 表示一行数据
 type Row struct {
-	Values []types.Value
+	ID      RowID         // 行 ID
+	Deleted bool          // 删除标记
+	Values  []types.Value // 列值
 }
 
 // Serialize 序列化行
 func (r *Row) Serialize() ([]byte, error) {
 	buf := make([]byte, 0)
 
-	// 列数
+	// 删除标记（1 字节）
+	if r.Deleted {
+		buf = append(buf, 1)
+	} else {
+		buf = append(buf, 0)
+	}
+
+	// 列数（2 字节）
 	colCount := uint16(len(r.Values))
 	colCountBuf := make([]byte, 2)
 	colCountBuf[0] = byte(colCount & 0xFF)
@@ -35,20 +50,28 @@ func (r *Row) Serialize() ([]byte, error) {
 
 // DeserializeRow 反序列化行
 func DeserializeRow(data []byte, numColumns int) (*Row, error) {
-	if len(data) < 2 {
+	if len(data) < 3 {
 		return nil, fmt.Errorf("data too short for row")
 	}
 
-	colCount := int(uint16(data[0]) | (uint16(data[1]) << 8))
+	// 读取删除标记
+	deleted := data[0] == 1
+	offset := 1
+
+	// 读取列数
+	colCount := int(uint16(data[offset]) | (uint16(data[offset+1]) << 8))
+	offset += 2
+
 	if colCount != numColumns {
 		return nil, fmt.Errorf("column count mismatch: expected %d, got %d", numColumns, colCount)
 	}
 
 	row := &Row{
-		Values: make([]types.Value, colCount),
+		Deleted: deleted,
+		Values:  make([]types.Value, colCount),
 	}
 
-	offset := 2
+	// 读取每列的值
 	for i := 0; i < colCount; i++ {
 		val, bytesRead, err := types.Deserialize(data[offset:])
 		if err != nil {
@@ -137,8 +160,13 @@ func (t *TableStorage) InsertRow(row *Row) error {
 	}
 }
 
-// GetAllRows 获取所有行
+// GetAllRows 获取所有行（不包含已删除的行）
 func (t *TableStorage) GetAllRows() ([]*Row, error) {
+	return t.GetAllRowsWithDeleted(false)
+}
+
+// GetAllRowsWithDeleted 获取所有行（可选包含已删除的行）
+func (t *TableStorage) GetAllRowsWithDeleted(includeDeleted bool) ([]*Row, error) {
 	rows := make([]*Row, 0)
 
 	currentPageID := t.firstPageID
@@ -154,12 +182,22 @@ func (t *TableStorage) GetAllRows() ([]*Row, error) {
 			return nil, err
 		}
 
-		for _, rowData := range rowsData {
+		for rowIndex, rowData := range rowsData {
 			row, err := DeserializeRow(rowData, t.numColumns)
 			if err != nil {
 				return nil, err
 			}
-			rows = append(rows, row)
+
+			// 设置行 ID
+			row.ID = RowID{
+				PageID:   currentPageID,
+				RowIndex: uint16(rowIndex),
+			}
+
+			// 根据参数决定是否包含已删除的行
+			if !row.Deleted || includeDeleted {
+				rows = append(rows, row)
+			}
 		}
 
 		// 检查是否有下一页
@@ -175,4 +213,53 @@ func (t *TableStorage) GetAllRows() ([]*Row, error) {
 // GetFirstPageID 获取第一页 ID
 func (t *TableStorage) GetFirstPageID() uint32 {
 	return t.firstPageID
+}
+
+// MarkRowDeleted 标记行为删除
+func (t *TableStorage) MarkRowDeleted(rowID RowID) error {
+	// 获取页
+	page, err := t.pager.GetPage(rowID.PageID)
+	if err != nil {
+		return err
+	}
+
+	// 读取行数据
+	rowData, err := page.ReadRow(rowID.RowIndex)
+	if err != nil {
+		return err
+	}
+
+	// 反序列化
+	row, err := DeserializeRow(rowData, t.numColumns)
+	if err != nil {
+		return err
+	}
+
+	// 标记删除
+	row.Deleted = true
+
+	// 重新序列化
+	newRowData, err := row.Serialize()
+	if err != nil {
+		return err
+	}
+
+	// 更新页中的行数据
+	if err := page.UpdateRow(rowID.RowIndex, newRowData); err != nil {
+		return err
+	}
+
+	// 刷新页
+	return t.pager.FlushPage(rowID.PageID)
+}
+
+// UpdateRow 更新行（标记旧行删除 + 插入新行）
+func (t *TableStorage) UpdateRow(rowID RowID, newRow *Row) error {
+	// 标记旧行为删除
+	if err := t.MarkRowDeleted(rowID); err != nil {
+		return err
+	}
+
+	// 插入新行
+	return t.InsertRow(newRow)
 }
