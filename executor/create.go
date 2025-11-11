@@ -13,6 +13,11 @@ import (
 func (e *Executor) executeCreateTable(stmt *sqlparser.DDL) (string, error) {
 	tableName := stmt.NewName.Name.String()
 
+	// 检查 TableSpec 是否存在
+	if stmt.TableSpec == nil {
+		return "", fmt.Errorf("invalid CREATE TABLE statement: missing table specification")
+	}
+
 	// 解析列定义
 	columns := make([]catalog.Column, 0)
 	for _, colDef := range stmt.TableSpec.Columns {

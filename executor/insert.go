@@ -83,6 +83,10 @@ func (e *Executor) evalSQLVal(val *sqlparser.SQLVal, expectedType types.DataType
 		if err != nil {
 			return types.Value{}, err
 		}
+		// 支持 INT 到 FLOAT 的自动转换
+		if expectedType == types.TypeFloat {
+			return types.NewFloatValue(float64(intVal)), nil
+		}
 		if expectedType != types.TypeInt {
 			return types.Value{}, fmt.Errorf("type mismatch: expected %s, got INT", expectedType)
 		}

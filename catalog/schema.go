@@ -163,15 +163,15 @@ func (c *Catalog) Load() error {
 // ParseDataType 从字符串解析数据类型
 func ParseDataType(typeStr string) (types.DataType, error) {
 	switch typeStr {
-	case "INT":
+	case "INT", "INTEGER", "BIGINT":
 		return types.TypeInt, nil
-	case "TEXT":
+	case "TEXT", "VARCHAR", "CHAR", "STRING":
 		return types.TypeText, nil
-	case "BOOLEAN":
+	case "BOOLEAN", "BOOL", "TINYINT":
 		return types.TypeBoolean, nil
-	case "FLOAT":
+	case "FLOAT", "DOUBLE", "REAL":
 		return types.TypeFloat, nil
-	case "DATE":
+	case "DATE", "DATETIME", "TIMESTAMP":
 		return types.TypeDate, nil
 	default:
 		return 0, fmt.Errorf("unsupported data type: %s", typeStr)
