@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"godb/catalog"
 	"godb/storage"
+	"godb/transaction"
 	"godb/types"
 	"strconv"
 	"strings"
@@ -21,6 +22,13 @@ func (e *Executor) executeInsert(stmt *sqlparser.Insert) (string, error) {
 	schema, err := e.catalog.GetTable(tableName)
 	if err != nil {
 		return "", err
+	}
+
+	// 获取写锁
+	txID := e.getCurrentTxID()
+	lockManager := e.txManager.GetLockManager()
+	if err := lockManager.AcquireWriteLock(tableName, transaction.TransactionID(txID)); err != nil {
+		return "", fmt.Errorf("failed to acquire write lock: %w", err)
 	}
 
 	// 创建表存储
@@ -44,6 +52,7 @@ func (e *Executor) executeInsert(stmt *sqlparser.Insert) (string, error) {
 
 		// 构造行
 		row := &storage.Row{
+			TxID:   txID, // 设置事务ID
 			Values: make([]types.Value, len(schema.Columns)),
 		}
 
@@ -69,7 +78,26 @@ func (e *Executor) executeInsert(stmt *sqlparser.Insert) (string, error) {
 			return "", fmt.Errorf("failed to update index: %w", err)
 		}
 
+		// 记录操作到事务日志（用于回滚）
+		if e.currentTx != nil {
+			op := &transaction.Operation{
+				Type:      transaction.OpInsert,
+				TableName: tableName,
+				RowID:     row.ID,
+				NewData:   row,
+			}
+			e.currentTx.AddOperation(op)
+		}
+
 		insertCount++
+	}
+
+	// 如果是自动提交模式，立即释放锁和刷新
+	if e.currentTx == nil {
+		lockManager.ReleaseLocks(transaction.TransactionID(txID))
+		if err := e.pager.FlushAll(); err != nil {
+			return "", fmt.Errorf("failed to flush pages: %w", err)
+		}
 	}
 
 	return fmt.Sprintf("%d row(s) inserted", insertCount), nil

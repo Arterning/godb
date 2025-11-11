@@ -15,6 +15,7 @@ type RowID struct {
 type Row struct {
 	ID      RowID         // 行 ID
 	Deleted bool          // 删除标记
+	TxID    uint64        // 创建/修改此行的事务ID（0表示自动提交）
 	Values  []types.Value // 列值
 }
 
@@ -28,6 +29,13 @@ func (r *Row) Serialize() ([]byte, error) {
 	} else {
 		buf = append(buf, 0)
 	}
+
+	// 事务ID（8 字节）
+	txIDBuf := make([]byte, 8)
+	for i := 0; i < 8; i++ {
+		txIDBuf[i] = byte((r.TxID >> (i * 8)) & 0xFF)
+	}
+	buf = append(buf, txIDBuf...)
 
 	// 列数（2 字节）
 	colCount := uint16(len(r.Values))
@@ -58,6 +66,17 @@ func DeserializeRow(data []byte, numColumns int) (*Row, error) {
 	deleted := data[0] == 1
 	offset := 1
 
+	// 读取事务ID（新格式）
+	var txID uint64
+	if len(data) >= 11 { // 至少需要 1(deleted) + 8(txID) + 2(colCount)
+		txID = 0
+		for i := 0; i < 8; i++ {
+			txID |= uint64(data[offset+i]) << (i * 8)
+		}
+		offset += 8
+	}
+	// 如果是旧格式（没有TxID），txID保持为0，表示自动提交
+
 	// 读取列数
 	colCount := int(uint16(data[offset]) | (uint16(data[offset+1]) << 8))
 	offset += 2
@@ -68,6 +87,7 @@ func DeserializeRow(data []byte, numColumns int) (*Row, error) {
 
 	row := &Row{
 		Deleted: deleted,
+		TxID:    txID,
 		Values:  make([]types.Value, colCount),
 	}
 

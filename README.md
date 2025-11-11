@@ -22,6 +22,7 @@
 - **DELETE**: 删除数据
 - **WHERE**: 条件过滤（支持 =, !=, <, <=, >, >= 和 AND/OR 逻辑运算）
 - **JOIN**: 表连接（支持 INNER JOIN, LEFT JOIN, RIGHT JOIN）
+- **事务支持**: BEGIN/COMMIT/ROLLBACK（支持 ACID 特性和 READ COMMITTED 隔离级别）
 
 ### 存储引擎特性
 - **页式存储**: 4KB 页大小，类似 SQLite 的设计
@@ -88,6 +89,48 @@ DROP INDEX idx_age
 exit
 ```
 
+### 事务使用示例（NEW!）
+
+```sql
+-- 创建测试表
+CREATE TABLE accounts (id INT, name TEXT, balance FLOAT)
+
+-- 自动提交模式（默认）
+INSERT INTO accounts VALUES (1, 'Alice', 1000.0)
+INSERT INTO accounts VALUES (2, 'Bob', 500.0)
+
+-- 事务提交示例
+BEGIN
+UPDATE accounts SET balance = 900.0 WHERE name = 'Alice'
+UPDATE accounts SET balance = 600.0 WHERE name = 'Bob'
+COMMIT
+
+-- 事务回滚示例
+BEGIN
+UPDATE accounts SET balance = 0.0 WHERE name = 'Alice'
+SELECT * FROM accounts  -- 事务内可以看到修改
+ROLLBACK  -- 回滚，Alice 的余额恢复为 900.0
+
+-- 复杂转账事务（原子性）
+BEGIN
+UPDATE accounts SET balance = 800.0 WHERE name = 'Alice'
+UPDATE accounts SET balance = 700.0 WHERE name = 'Bob'
+COMMIT  -- 要么全部成功，要么全部失败
+
+-- 查看最终结果
+SELECT * FROM accounts
+```
+
+**事务特性说明：**
+- **原子性（Atomicity）**: 事务中的所有操作要么全部成功（COMMIT），要么全部失败（ROLLBACK）
+- **一致性（Consistency）**: 事务执行前后数据库保持一致状态
+- **隔离性（Isolation）**: 支持 READ COMMITTED 隔离级别，事务只能看到已提交的数据
+- **持久性（Durability）**: COMMIT 后的更改永久保存到磁盘
+
+-- 退出
+exit
+```
+
 ### 索引使用示例
 
 ```sql
@@ -134,19 +177,25 @@ godb/
 │   ├── page.go         # 页管理
 │   ├── pager.go        # 页缓存和磁盘 I/O
 │   └── table.go        # 表存储和行管理
-├── index/               # 索引系统（NEW!）
+├── index/               # 索引系统
 │   ├── index.go        # B-Tree 索引实现
 │   └── manager.go      # 索引管理器
+├── transaction/         # 事务系统（NEW!）
+│   ├── transaction.go  # 事务结构和操作日志
+│   ├── lock.go         # 锁管理器（表级锁）
+│   └── manager.go      # 事务管理器
 ├── catalog/             # 元数据管理
 │   └── schema.go       # 表和索引元数据
 ├── executor/            # 查询执行器
 │   ├── executor.go     # 主执行器
 │   ├── create.go       # CREATE/DROP TABLE
 │   ├── index.go        # CREATE/DROP INDEX
-│   ├── insert.go       # INSERT（维护索引）
-│   ├── select.go       # SELECT（使用索引优化）
-│   ├── update.go       # UPDATE（维护索引）
-│   └── delete.go       # DELETE（维护索引）
+│   ├── transaction.go  # BEGIN/COMMIT/ROLLBACK
+│   ├── insert.go       # INSERT（维护索引+事务）
+│   ├── select.go       # SELECT（索引优化+可见性过滤）
+│   ├── update.go       # UPDATE（维护索引+事务）
+│   ├── delete.go       # DELETE（维护索引+事务）
+│   └── join.go         # JOIN 操作
 └── repl/                # REPL 交互界面
     └── repl.go
 ```
@@ -195,6 +244,28 @@ godb/
 4. DELETE 时：从索引中删除对应条目
 5. SELECT 时：检测 WHERE 条件，如果列有索引则使用索引查询
 
+### 6. 事务系统（NEW!）
+完整的 ACID 事务支持，基于锁和操作日志实现：
+- **原子性（Atomicity）**: 使用操作日志记录事务的所有修改，ROLLBACK 时逆序回滚
+- **一致性（Consistency）**: 事务执行前后数据库保持一致状态
+- **隔离性（Isolation）**:
+  - 支持 READ COMMITTED 隔离级别
+  - 使用表级锁（读锁/写锁）控制并发访问
+  - 可见性规则：只能看到已提交事务的数据和当前事务的修改
+- **持久性（Durability）**: COMMIT 时刷新所有脏页到磁盘
+- **锁机制**:
+  - 表级锁（支持并发多个读事务，写事务互斥）
+  - 自动死锁超时检测（30秒）
+  - 事务结束时自动释放所有锁
+- **事务日志**: 记录 INSERT/UPDATE/DELETE 操作用于回滚
+
+**事务工作流程**:
+1. BEGIN: 分配事务ID，进入事务模式
+2. 修改操作: 获取表锁，记录操作日志，设置行的事务ID
+3. SELECT: 获取读锁，应用可见性过滤（READ COMMITTED）
+4. COMMIT: 刷新脏页到磁盘，释放所有锁，标记事务为已提交
+5. ROLLBACK: 逆序回滚操作日志，恢复数据，释放所有锁
+
 ## 数据库文件
 
 - **godb.db**: 二进制数据文件（页式存储）
@@ -217,7 +288,7 @@ godb/
 ./godb.exe < test_persistence.sql
 ```
 
-### 测试索引功能（NEW!）
+### 测试索引功能
 ```bash
 ./godb.exe < test_index.sql
 ```
@@ -225,6 +296,16 @@ godb/
 ### 测试索引性能
 ```bash
 ./godb.exe < test_index_performance.sql
+```
+
+### 测试 JOIN 功能
+```bash
+./godb.exe < test_join.sql
+```
+
+### 测试事务功能（NEW!）
+```bash
+./godb.exe < test_transaction.sql
 ```
 
 ## 技术栈
@@ -236,22 +317,28 @@ godb/
 ## 未来优化方向
 
 1. **复合索引**: 支持多列组合索引
-2. **JOIN 操作**: 支持表连接查询
-3. **事务支持**: 实现 ACID 特性
-4. **垃圾回收**: VACUUM 机制清理已删除数据
-5. **聚合函数**: COUNT, SUM, AVG, MIN, MAX
-6. **更多 SQL 特性**:
+2. **垃圾回收**: VACUUM 机制清理已删除数据
+3. **聚合函数**: COUNT, SUM, AVG, MIN, MAX
+4. **更多 SQL 特性**:
    - GROUP BY / HAVING
    - ORDER BY / LIMIT / OFFSET
    - 子查询
    - UNIQUE 约束
    - 外键约束
-7. **性能优化**:
+5. **事务增强**:
+   - 支持更高隔离级别（REPEATABLE READ, SERIALIZABLE）
+   - 行级锁代替表级锁
+   - MVCC 多版本并发控制
+   - WAL（Write-Ahead Log）
+   - 崩溃恢复机制
+   - SAVEPOINT 支持
+6. **性能优化**:
    - 索引持久化到磁盘（当前为内存索引）
    - 更智能的页缓存策略（LRU）
    - 批量插入优化
    - 查询优化器（选择最优索引）
    - 索引统计信息
+   - 并行查询执行
 
 ## 与主流数据库的对比
 

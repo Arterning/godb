@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"godb/catalog"
 	"godb/storage"
+	"godb/transaction"
 	"godb/types"
 
 	"github.com/xwb1989/sqlparser"
@@ -18,6 +19,13 @@ func (e *Executor) executeUpdate(stmt *sqlparser.Update) (string, error) {
 	schema, err := e.catalog.GetTable(tableName)
 	if err != nil {
 		return "", err
+	}
+
+	// 获取写锁
+	txID := e.getCurrentTxID()
+	lockManager := e.txManager.GetLockManager()
+	if err := lockManager.AcquireWriteLock(tableName, transaction.TransactionID(txID)); err != nil {
+		return "", fmt.Errorf("failed to acquire write lock: %w", err)
 	}
 
 	// 创建表存储
@@ -81,6 +89,7 @@ func (e *Executor) executeUpdate(stmt *sqlparser.Update) (string, error) {
 
 			// 创建新行（复制原行的值）
 			newRow := &storage.Row{
+				TxID:   txID, // 设置事务ID
 				Values: make([]types.Value, len(row.Values)),
 			}
 			copy(newRow.Values, row.Values)
@@ -94,6 +103,15 @@ func (e *Executor) executeUpdate(stmt *sqlparser.Update) (string, error) {
 				newRow.Values[colIndex] = value.(types.Value)
 			}
 
+			// 保存旧行数据（用于回滚）
+			oldRowCopy := &storage.Row{
+				ID:      row.ID,
+				Deleted: row.Deleted,
+				TxID:    row.TxID,
+				Values:  make([]types.Value, len(row.Values)),
+			}
+			copy(oldRowCopy.Values, row.Values)
+
 			// 执行更新（标记旧行删除 + 插入新行）
 			if err := tableStorage.UpdateRow(row.ID, newRow); err != nil {
 				return "", fmt.Errorf("failed to update row: %w", err)
@@ -104,7 +122,27 @@ func (e *Executor) executeUpdate(stmt *sqlparser.Update) (string, error) {
 				return "", fmt.Errorf("failed to insert new index entry: %w", err)
 			}
 
+			// 记录操作到事务日志（用于回滚）
+			if e.currentTx != nil {
+				op := &transaction.Operation{
+					Type:      transaction.OpUpdate,
+					TableName: tableName,
+					RowID:     row.ID,
+					OldData:   oldRowCopy,
+					NewData:   newRow,
+				}
+				e.currentTx.AddOperation(op)
+			}
+
 			updateCount++
+		}
+	}
+
+	// 如果是自动提交模式，立即释放锁和刷新
+	if e.currentTx == nil {
+		lockManager.ReleaseLocks(transaction.TransactionID(txID))
+		if err := e.pager.FlushAll(); err != nil {
+			return "", fmt.Errorf("failed to flush pages: %w", err)
 		}
 	}
 

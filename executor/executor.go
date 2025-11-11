@@ -6,6 +6,7 @@ import (
 	"godb/index"
 	"godb/parser"
 	"godb/storage"
+	"godb/transaction"
 	"github.com/xwb1989/sqlparser"
 )
 
@@ -14,19 +15,28 @@ type Executor struct {
 	catalog      *catalog.Catalog
 	pager        *storage.Pager
 	indexManager *index.IndexManager
+	txManager    *transaction.TransactionManager
+	currentTx    *transaction.Transaction // 当前活跃事务（nil表示自动提交模式）
 }
 
 // NewExecutor 创建执行器
-func NewExecutor(catalog *catalog.Catalog, pager *storage.Pager, indexManager *index.IndexManager) *Executor {
+func NewExecutor(catalog *catalog.Catalog, pager *storage.Pager, indexManager *index.IndexManager, txManager *transaction.TransactionManager) *Executor {
 	return &Executor{
 		catalog:      catalog,
 		pager:        pager,
 		indexManager: indexManager,
+		txManager:    txManager,
+		currentTx:    nil, // 默认自动提交模式
 	}
 }
 
 // Execute 执行 SQL 语句
 func (e *Executor) Execute(sql string) (string, error) {
+	// 检查是否是事务命令
+	if isTransactionCommand(sql) {
+		return e.executeTransactionCommand(sql)
+	}
+
 	// 检查是否是索引相关语句
 	if isCreateIndex(sql) {
 		return e.executeCreateIndex(sql)

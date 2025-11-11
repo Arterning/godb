@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"godb/catalog"
 	"godb/storage"
+	"godb/transaction"
 	"godb/types"
 	"strings"
 
@@ -30,6 +31,18 @@ func (e *Executor) executeSelect(stmt *sqlparser.Select) (string, error) {
 	}
 
 	tableName := aliasedTable.Expr.(sqlparser.TableName).Name.String()
+
+	// 获取读锁
+	txID := e.getCurrentTxID()
+	lockManager := e.txManager.GetLockManager()
+	if err := lockManager.AcquireReadLock(tableName, transaction.TransactionID(txID)); err != nil {
+		return "", fmt.Errorf("failed to acquire read lock: %w", err)
+	}
+
+	// 如果是自动提交模式，在操作完成后释放锁
+	if e.currentTx == nil {
+		defer lockManager.ReleaseLocks(transaction.TransactionID(txID))
+	}
 
 	// 获取表定义
 	schema, err := e.catalog.GetTable(tableName)
@@ -74,6 +87,9 @@ func (e *Executor) executeSelect(stmt *sqlparser.Select) (string, error) {
 		filteredRows = rows
 	}
 
+	// 应用可见性过滤（READ COMMITTED隔离）
+	visibleRows := e.filterVisibleRows(filteredRows)
+
 	// 选择要显示的列
 	selectedColumns, err := e.getSelectedColumns(stmt.SelectExprs, schema)
 	if err != nil {
@@ -81,7 +97,40 @@ func (e *Executor) executeSelect(stmt *sqlparser.Select) (string, error) {
 	}
 
 	// 格式化输出
-	return e.formatResult(filteredRows, schema, selectedColumns), nil
+	return e.formatResult(visibleRows, schema, selectedColumns), nil
+}
+
+// filterVisibleRows 过滤可见的行（READ COMMITTED隔离级别）
+func (e *Executor) filterVisibleRows(rows []*storage.Row) []*storage.Row {
+	currentTxID := e.getCurrentTxID()
+	result := make([]*storage.Row, 0, len(rows))
+
+	for _, row := range rows {
+		if e.isRowVisible(row, currentTxID) {
+			result = append(result, row)
+		}
+	}
+
+	return result
+}
+
+// isRowVisible 判断行对当前事务是否可见（READ COMMITTED）
+func (e *Executor) isRowVisible(row *storage.Row, currentTxID uint64) bool {
+	// 如果行的TxID是0，表示自动提交模式下创建的，可见
+	if row.TxID == 0 {
+		return true
+	}
+
+	// 如果是当前事务创建的行，可见
+	if row.TxID == currentTxID {
+		return true
+	}
+
+	// 检查创建该行的事务是否已提交
+	// 如果不在活跃事务列表中，说明已经提交或回滚
+	// READ COMMITTED下，我们假设不在活跃列表中的事务都已提交，可见
+	isCommitted := e.txManager.IsCommitted(transaction.TransactionID(row.TxID))
+	return isCommitted
 }
 
 // getSelectedColumns 获取要显示的列索引

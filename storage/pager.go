@@ -122,6 +122,21 @@ func (p *Pager) FlushPage(pageID uint32) error {
 	return p.writePageToDisk(page)
 }
 
+// FlushAll 刷新所有缓存页到磁盘
+func (p *Pager) FlushAll() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, page := range p.pageCache {
+		if err := p.writePageToDisk(page); err != nil {
+			return err
+		}
+	}
+
+	// 同步文件到磁盘
+	return p.file.Sync()
+}
+
 // writePageToDisk 写入页到磁盘（内部方法，需要调用者持有锁）
 func (p *Pager) writePageToDisk(page *Page) error {
 	buf := page.Serialize()

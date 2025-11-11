@@ -7,6 +7,7 @@ import (
 	"godb/index"
 	"godb/repl"
 	"godb/storage"
+	"godb/transaction"
 	"os"
 )
 
@@ -39,8 +40,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 创建事务管理器
+	txMgr := transaction.NewTransactionManager(pager, catalogMgr)
+
 	// 创建执行器
-	exec := executor.NewExecutor(catalogMgr, pager, indexMgr)
+	exec := executor.NewExecutor(catalogMgr, pager, indexMgr, txMgr)
 
 	// 启动 REPL
 	r := repl.NewREPL(exec, os.Stdin)
