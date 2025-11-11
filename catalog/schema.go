@@ -15,6 +15,14 @@ type Column struct {
 	Type types.DataType  // 数据类型
 }
 
+// IndexInfo 索引信息
+type IndexInfo struct {
+	Name       string         // 索引名
+	TableName  string         // 表名
+	ColumnName string         // 列名
+	ColumnType types.DataType // 列类型
+}
+
 // TableSchema 表定义
 type TableSchema struct {
 	Name        string    // 表名
@@ -44,14 +52,22 @@ func (t *TableSchema) GetColumnType(columnName string) (types.DataType, error) {
 // Catalog 元数据管理器
 type Catalog struct {
 	tables   map[string]*TableSchema // 表名 -> 表定义
+	indexes  map[string]*IndexInfo   // 索引名 -> 索引信息
 	mu       sync.RWMutex
 	metaFile string // 元数据文件路径
+}
+
+// CatalogData 用于序列化的数据结构
+type CatalogData struct {
+	Tables  map[string]*TableSchema `json:"tables"`
+	Indexes map[string]*IndexInfo   `json:"indexes"`
 }
 
 // NewCatalog 创建元数据管理器
 func NewCatalog(metaFile string) (*Catalog, error) {
 	catalog := &Catalog{
 		tables:   make(map[string]*TableSchema),
+		indexes:  make(map[string]*IndexInfo),
 		metaFile: metaFile,
 	}
 
@@ -131,7 +147,12 @@ func (c *Catalog) ListTables() []string {
 
 // save 保存元数据到文件（内部方法，需要调用者持有锁）
 func (c *Catalog) save() error {
-	data, err := json.MarshalIndent(c.tables, "", "  ")
+	catalogData := CatalogData{
+		Tables:  c.tables,
+		Indexes: c.indexes,
+	}
+
+	data, err := json.MarshalIndent(catalogData, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal catalog: %w", err)
 	}
@@ -153,8 +174,16 @@ func (c *Catalog) Load() error {
 		return err
 	}
 
-	if err := json.Unmarshal(data, &c.tables); err != nil {
+	var catalogData CatalogData
+	if err := json.Unmarshal(data, &catalogData); err != nil {
 		return fmt.Errorf("failed to unmarshal catalog: %w", err)
+	}
+
+	c.tables = catalogData.Tables
+	if catalogData.Indexes != nil {
+		c.indexes = catalogData.Indexes
+	} else {
+		c.indexes = make(map[string]*IndexInfo)
 	}
 
 	return nil
@@ -181,4 +210,94 @@ func ParseDataType(typeStr string) (types.DataType, error) {
 // CreateTableStorage 为表创建存储
 func CreateTableStorage(pager *storage.Pager, schema *TableSchema) (*storage.TableStorage, error) {
 	return storage.LoadTableStorage(pager, schema.FirstPageID, len(schema.Columns)), nil
+}
+
+// CreateIndex 创建索引
+func (c *Catalog) CreateIndex(name, tableName, columnName string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 检查索引是否已存在
+	if _, exists := c.indexes[name]; exists {
+		return fmt.Errorf("index already exists: %s", name)
+	}
+
+	// 检查表是否存在
+	table, exists := c.tables[tableName]
+	if !exists {
+		return fmt.Errorf("table not found: %s", tableName)
+	}
+
+	// 检查列是否存在
+	colIndex := table.GetColumnIndex(columnName)
+	if colIndex == -1 {
+		return fmt.Errorf("column not found: %s", columnName)
+	}
+
+	// 创建索引信息
+	indexInfo := &IndexInfo{
+		Name:       name,
+		TableName:  tableName,
+		ColumnName: columnName,
+		ColumnType: table.Columns[colIndex].Type,
+	}
+
+	c.indexes[name] = indexInfo
+
+	// 持久化
+	return c.save()
+}
+
+// DropIndex 删除索引
+func (c *Catalog) DropIndex(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, exists := c.indexes[name]; !exists {
+		return fmt.Errorf("index not found: %s", name)
+	}
+
+	delete(c.indexes, name)
+
+	// 持久化
+	return c.save()
+}
+
+// GetIndex 获取索引信息
+func (c *Catalog) GetIndex(name string) (*IndexInfo, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	info, exists := c.indexes[name]
+	if !exists {
+		return nil, fmt.Errorf("index not found: %s", name)
+	}
+
+	return info, nil
+}
+
+// ListIndexes 列出所有索引
+func (c *Catalog) ListIndexes() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	names := make([]string, 0, len(c.indexes))
+	for name := range c.indexes {
+		names = append(names, name)
+	}
+	return names
+}
+
+// GetIndexesByTable 获取指定表的所有索引
+func (c *Catalog) GetIndexesByTable(tableName string) []*IndexInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	result := make([]*IndexInfo, 0)
+	for _, info := range c.indexes {
+		if info.TableName == tableName {
+			result = append(result, info)
+		}
+	}
+	return result
 }

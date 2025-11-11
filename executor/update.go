@@ -70,6 +70,15 @@ func (e *Executor) executeUpdate(stmt *sqlparser.Update) (string, error) {
 		}
 
 		if match {
+			// 删除旧行的索引条目
+			columnNames := make([]string, len(schema.Columns))
+			for i, col := range schema.Columns {
+				columnNames[i] = col.Name
+			}
+			if err := e.indexManager.DeleteEntry(tableName, row, columnNames); err != nil {
+				return "", fmt.Errorf("failed to delete old index entry: %w", err)
+			}
+
 			// 创建新行（复制原行的值）
 			newRow := &storage.Row{
 				Values: make([]types.Value, len(row.Values)),
@@ -88,6 +97,11 @@ func (e *Executor) executeUpdate(stmt *sqlparser.Update) (string, error) {
 			// 执行更新（标记旧行删除 + 插入新行）
 			if err := tableStorage.UpdateRow(row.ID, newRow); err != nil {
 				return "", fmt.Errorf("failed to update row: %w", err)
+			}
+
+			// 为新行添加索引条目
+			if err := e.indexManager.InsertEntry(tableName, newRow, columnNames); err != nil {
+				return "", fmt.Errorf("failed to insert new index entry: %w", err)
 			}
 
 			updateCount++

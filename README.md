@@ -14,8 +14,10 @@
 ### 支持的 SQL 操作
 - **CREATE TABLE**: 创建表
 - **DROP TABLE**: 删除表
+- **CREATE INDEX**: 创建索引（支持单列 B-Tree 索引）
+- **DROP INDEX**: 删除索引
 - **INSERT**: 插入数据
-- **SELECT**: 查询数据（支持列选择和 * 通配符）
+- **SELECT**: 查询数据（支持列选择和 * 通配符，自动使用索引优化）
 - **UPDATE**: 更新数据
 - **DELETE**: 删除数据
 - **WHERE**: 条件过滤（支持 =, !=, <, <=, >, >= 和 AND/OR 逻辑运算）
@@ -26,6 +28,13 @@
 - **二进制格式**: 高效的磁盘存储
 - **数据持久化**: 自动保存到磁盘
 - **元数据管理**: JSON 格式的表结构信息
+
+### 索引特性（NEW!）
+- **B-Tree 索引**: 基于 Google B-Tree 实现的高性能索引
+- **自动索引查询优化**: SELECT 语句自动使用索引
+- **索引维护**: INSERT/UPDATE/DELETE 自动维护索引
+- **支持查询类型**: 等值查询（=）和范围查询（<, <=, >, >=）
+- **索引持久化**: 索引元数据持久化，启动时自动重建
 
 ## 快速开始
 
@@ -64,8 +73,45 @@ UPDATE users SET active = 'false' WHERE name = 'Bob'
 -- 删除数据
 DELETE FROM users WHERE age < 30
 
+-- 创建索引（NEW!）
+CREATE INDEX idx_age ON users (age)
+
+-- 使用索引的查询（自动优化）
+SELECT * FROM users WHERE age = 30
+SELECT * FROM users WHERE age > 25
+
+-- 删除索引
+DROP INDEX idx_age
+
 -- 退出
 exit
+```
+
+### 索引使用示例
+
+```sql
+-- 创建表
+CREATE TABLE products (id INT, name TEXT, price FLOAT, stock INT)
+
+-- 插入数据
+INSERT INTO products VALUES (1, 'Laptop', 999.99, 10)
+INSERT INTO products VALUES (2, 'Mouse', 29.99, 100)
+INSERT INTO products VALUES (3, 'Keyboard', 79.99, 50)
+
+-- 在 price 列创建索引
+CREATE INDEX idx_price ON products (price)
+
+-- 以下查询会自动使用索引（快速）
+SELECT * FROM products WHERE price = 79.99      -- 等值查询
+SELECT * FROM products WHERE price > 100         -- 范围查询
+SELECT * FROM products WHERE price <= 100        -- 范围查询
+
+-- 更新和删除会自动维护索引
+UPDATE products SET price = 89.99 WHERE id = 3
+DELETE FROM products WHERE id = 2
+
+-- 删除索引
+DROP INDEX idx_price
 ```
 
 ### 从文件执行 SQL
@@ -87,15 +133,19 @@ godb/
 │   ├── page.go         # 页管理
 │   ├── pager.go        # 页缓存和磁盘 I/O
 │   └── table.go        # 表存储和行管理
+├── index/               # 索引系统（NEW!）
+│   ├── index.go        # B-Tree 索引实现
+│   └── manager.go      # 索引管理器
 ├── catalog/             # 元数据管理
-│   └── schema.go
+│   └── schema.go       # 表和索引元数据
 ├── executor/            # 查询执行器
 │   ├── executor.go     # 主执行器
 │   ├── create.go       # CREATE/DROP TABLE
-│   ├── insert.go       # INSERT
-│   ├── select.go       # SELECT
-│   ├── update.go       # UPDATE
-│   └── delete.go       # DELETE
+│   ├── index.go        # CREATE/DROP INDEX
+│   ├── insert.go       # INSERT（维护索引）
+│   ├── select.go       # SELECT（使用索引优化）
+│   ├── update.go       # UPDATE（维护索引）
+│   └── delete.go       # DELETE（维护索引）
 └── repl/                # REPL 交互界面
     └── repl.go
 ```
@@ -126,6 +176,24 @@ godb/
 - 支持类型别名（如 INT/INTEGER/BIGINT）
 - 自动类型转换（INT → FLOAT）
 
+### 5. B-Tree 索引（NEW!）
+基于 Google B-Tree 实现的高性能索引系统：
+- **索引结构**: 使用 B-Tree 存储键值到 RowID 的映射
+- **自动优化**: SELECT 语句自动检测并使用索引
+- **索引维护**: INSERT/UPDATE/DELETE 自动维护索引一致性
+- **查询支持**:
+  - 等值查询（WHERE col = value）使用 Search
+  - 范围查询（WHERE col > value）使用 RangeSearch
+- **持久化**: 索引元数据保存到 catalog，启动时自动重建
+- **性能优化**: 索引查询避免全表扫描，大幅提升查询性能
+
+**索引工作流程**:
+1. CREATE INDEX 时：扫描表中所有数据，构建 B-Tree 索引
+2. INSERT 时：插入数据后，自动将新行添加到相关索引
+3. UPDATE 时：删除旧索引条目，插入新索引条目
+4. DELETE 时：从索引中删除对应条目
+5. SELECT 时：检测 WHERE 条件，如果列有索引则使用索引查询
+
 ## 数据库文件
 
 - **godb.db**: 二进制数据文件（页式存储）
@@ -148,14 +216,25 @@ godb/
 ./godb.exe < test_persistence.sql
 ```
 
+### 测试索引功能（NEW!）
+```bash
+./godb.exe < test_index.sql
+```
+
+### 测试索引性能
+```bash
+./godb.exe < test_index_performance.sql
+```
+
 ## 技术栈
 
 - **Go 1.23.1**: 编程语言
 - **github.com/xwb1989/sqlparser**: SQL 解析器（基于 vitess）
+- **github.com/google/btree**: B-Tree 实现（用于索引）
 
 ## 未来优化方向
 
-1. **索引支持**: 实现 B-Tree 索引，提高查询性能
+1. **复合索引**: 支持多列组合索引
 2. **JOIN 操作**: 支持表连接查询
 3. **事务支持**: 实现 ACID 特性
 4. **垃圾回收**: VACUUM 机制清理已删除数据
@@ -164,11 +243,14 @@ godb/
    - GROUP BY / HAVING
    - ORDER BY / LIMIT / OFFSET
    - 子查询
-   - CREATE INDEX
+   - UNIQUE 约束
+   - 外键约束
 7. **性能优化**:
+   - 索引持久化到磁盘（当前为内存索引）
    - 更智能的页缓存策略（LRU）
    - 批量插入优化
-   - 查询优化器
+   - 查询优化器（选择最优索引）
+   - 索引统计信息
 
 ## 与主流数据库的对比
 

@@ -48,6 +48,15 @@ func (e *Executor) executeDelete(stmt *sqlparser.Delete) (string, error) {
 		}
 
 		if match {
+			// 删除索引条目
+			columnNames := make([]string, len(schema.Columns))
+			for i, col := range schema.Columns {
+				columnNames[i] = col.Name
+			}
+			if err := e.indexManager.DeleteEntry(tableName, row, columnNames); err != nil {
+				return "", fmt.Errorf("failed to delete index entry: %w", err)
+			}
+
 			// 标记行为删除
 			if err := tableStorage.MarkRowDeleted(row.ID); err != nil {
 				return "", fmt.Errorf("failed to delete row: %w", err)

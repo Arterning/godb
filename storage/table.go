@@ -138,7 +138,12 @@ func (t *TableStorage) InsertRow(row *Row) error {
 		// 尝试写入
 		_, err = page.WriteRow(rowData)
 		if err == nil {
-			// 写入成功，刷新页
+			// 写入成功，设置行 ID
+			row.ID = RowID{
+				PageID:   currentPageID,
+				RowIndex: page.RowCount - 1, // 刚插入的行索引
+			}
+			// 刷新页
 			return t.pager.FlushPage(currentPageID)
 		}
 
@@ -213,6 +218,16 @@ func (t *TableStorage) GetAllRowsWithDeleted(includeDeleted bool) ([]*Row, error
 // GetFirstPageID 获取第一页 ID
 func (t *TableStorage) GetFirstPageID() uint32 {
 	return t.firstPageID
+}
+
+// GetPager 获取页管理器
+func (t *TableStorage) GetPager() *Pager {
+	return t.pager
+}
+
+// GetNumColumns 获取列数
+func (t *TableStorage) GetNumColumns() int {
+	return t.numColumns
 }
 
 // MarkRowDeleted 标记行为删除

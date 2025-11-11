@@ -3,6 +3,7 @@ package executor
 import (
 	"fmt"
 	"godb/catalog"
+	"godb/index"
 	"godb/parser"
 	"godb/storage"
 	"github.com/xwb1989/sqlparser"
@@ -10,20 +11,30 @@ import (
 
 // Executor 查询执行器
 type Executor struct {
-	catalog *catalog.Catalog
-	pager   *storage.Pager
+	catalog      *catalog.Catalog
+	pager        *storage.Pager
+	indexManager *index.IndexManager
 }
 
 // NewExecutor 创建执行器
-func NewExecutor(catalog *catalog.Catalog, pager *storage.Pager) *Executor {
+func NewExecutor(catalog *catalog.Catalog, pager *storage.Pager, indexManager *index.IndexManager) *Executor {
 	return &Executor{
-		catalog: catalog,
-		pager:   pager,
+		catalog:      catalog,
+		pager:        pager,
+		indexManager: indexManager,
 	}
 }
 
 // Execute 执行 SQL 语句
 func (e *Executor) Execute(sql string) (string, error) {
+	// 检查是否是索引相关语句
+	if isCreateIndex(sql) {
+		return e.executeCreateIndex(sql)
+	}
+	if isDropIndex(sql) {
+		return e.executeDropIndex(sql)
+	}
+
 	// 解析 SQL
 	stmt, err := parser.Parse(sql)
 	if err != nil {

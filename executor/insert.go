@@ -59,6 +59,16 @@ func (e *Executor) executeInsert(stmt *sqlparser.Insert) (string, error) {
 		if err := tableStorage.InsertRow(row); err != nil {
 			return "", fmt.Errorf("failed to insert row: %w", err)
 		}
+
+		// 更新所有相关索引
+		columnNames := make([]string, len(schema.Columns))
+		for i, col := range schema.Columns {
+			columnNames[i] = col.Name
+		}
+		if err := e.indexManager.InsertEntry(tableName, row, columnNames); err != nil {
+			return "", fmt.Errorf("failed to update index: %w", err)
+		}
+
 		insertCount++
 	}
 

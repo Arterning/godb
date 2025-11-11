@@ -31,19 +31,35 @@ func (e *Executor) executeSelect(stmt *sqlparser.Select) (string, error) {
 		return "", err
 	}
 
-	// 读取所有行
-	rows, err := tableStorage.GetAllRows()
-	if err != nil {
-		return "", err
-	}
+	var filteredRows []*storage.Row
 
-	// 应用 WHERE 条件过滤
-	filteredRows := rows
+	// 尝试使用索引查询
 	if stmt.Where != nil {
-		filteredRows, err = e.filterRows(rows, stmt.Where.Expr, schema)
+		indexRows, used, err := e.tryIndexScan(tableName, stmt.Where.Expr, schema, tableStorage)
 		if err != nil {
 			return "", err
 		}
+		if used {
+			// 成功使用索引
+			filteredRows = indexRows
+		} else {
+			// 回退到全表扫描
+			rows, err := tableStorage.GetAllRows()
+			if err != nil {
+				return "", err
+			}
+			filteredRows, err = e.filterRows(rows, stmt.Where.Expr, schema)
+			if err != nil {
+				return "", err
+			}
+		}
+	} else {
+		// 没有 WHERE 条件，全表扫描
+		rows, err := tableStorage.GetAllRows()
+		if err != nil {
+			return "", err
+		}
+		filteredRows = rows
 	}
 
 	// 选择要显示的列
@@ -302,4 +318,105 @@ func (e *Executor) formatResult(rows []*storage.Row, schema *catalog.TableSchema
 	result.WriteString(fmt.Sprintf("\n%d row(s) returned", len(rows)))
 
 	return result.String()
+}
+
+// tryIndexScan 尝试使用索引扫描
+// 返回: (结果行, 是否使用了索引, 错误)
+func (e *Executor) tryIndexScan(tableName string, whereExpr sqlparser.Expr, schema *catalog.TableSchema, tableStorage *storage.TableStorage) ([]*storage.Row, bool, error) {
+	// 检查是否是简单的比较表达式
+	compExpr, ok := whereExpr.(*sqlparser.ComparisonExpr)
+	if !ok {
+		// 不是简单比较，无法使用索引
+		return nil, false, nil
+	}
+
+	// 获取列名
+	colName, ok := compExpr.Left.(*sqlparser.ColName)
+	if !ok {
+		return nil, false, nil
+	}
+
+	columnName := colName.Name.String()
+	operator := compExpr.Operator
+
+	// 检查该列是否有索引
+	idx := e.indexManager.GetIndexByColumn(tableName, columnName)
+	if idx == nil {
+		// 没有索引
+		return nil, false, nil
+	}
+
+	// 获取比较值
+	colIndex := schema.GetColumnIndex(columnName)
+	if colIndex == -1 {
+		return nil, false, fmt.Errorf("column not found: %s", columnName)
+	}
+
+	colType := schema.Columns[colIndex].Type
+	value, err := e.evalExpr(compExpr.Right, colType)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// 使用索引查询
+	var rowIDs []storage.RowID
+	switch operator {
+	case "=":
+		rowIDs, err = idx.Search(value)
+	case "<", "<=", ">", ">=":
+		rowIDs, err = idx.RangeSearch(operator, value)
+	default:
+		// 不支持的操作符，回退到全表扫描
+		return nil, false, nil
+	}
+
+	if err != nil {
+		return nil, false, err
+	}
+
+	// 根据 RowID 获取行数据
+	rows, err := e.getRowsByIDs(tableStorage, rowIDs)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return rows, true, nil
+}
+
+// getRowsByIDs 根据 RowID 列表获取行数据
+func (e *Executor) getRowsByIDs(tableStorage *storage.TableStorage, rowIDs []storage.RowID) ([]*storage.Row, error) {
+	rows := make([]*storage.Row, 0, len(rowIDs))
+
+	for _, rowID := range rowIDs {
+		row, err := e.getRowByID(tableStorage, rowID)
+		if err != nil {
+			return nil, err
+		}
+		if row != nil && !row.Deleted {
+			rows = append(rows, row)
+		}
+	}
+
+	return rows, nil
+}
+
+// getRowByID 根据 RowID 获取单行数据
+func (e *Executor) getRowByID(tableStorage *storage.TableStorage, rowID storage.RowID) (*storage.Row, error) {
+	page, err := tableStorage.GetPager().GetPage(rowID.PageID)
+	if err != nil {
+		return nil, err
+	}
+
+	rowData, err := page.ReadRow(rowID.RowIndex)
+	if err != nil {
+		return nil, err
+	}
+
+	row, err := storage.DeserializeRow(rowData, tableStorage.GetNumColumns())
+	if err != nil {
+		return nil, err
+	}
+
+	row.ID = rowID
+	return row, nil
 }
