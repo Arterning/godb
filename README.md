@@ -21,6 +21,7 @@
 - **UPDATE**: 更新数据
 - **DELETE**: 删除数据
 - **WHERE**: 条件过滤（支持 =, !=, <, <=, >, >= 和 AND/OR 逻辑运算）
+- **JOIN**: 表连接（支持 INNER JOIN, LEFT JOIN, RIGHT JOIN）
 
 ### 存储引擎特性
 - **页式存储**: 4KB 页大小，类似 SQLite 的设计

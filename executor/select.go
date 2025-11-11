@@ -12,12 +12,24 @@ import (
 
 // executeSelect 执行 SELECT 语句
 func (e *Executor) executeSelect(stmt *sqlparser.Select) (string, error) {
-	// 获取表名
+	// 检查是否是 JOIN 查询
+	if len(stmt.From) == 1 {
+		if _, isJoin := stmt.From[0].(*sqlparser.JoinTableExpr); isJoin {
+			return e.executeJoin(stmt)
+		}
+	}
+
+	// 单表查询
 	if len(stmt.From) != 1 {
 		return "", fmt.Errorf("only single table select is supported")
 	}
 
-	tableName := stmt.From[0].(*sqlparser.AliasedTableExpr).Expr.(sqlparser.TableName).Name.String()
+	aliasedTable, ok := stmt.From[0].(*sqlparser.AliasedTableExpr)
+	if !ok {
+		return "", fmt.Errorf("invalid FROM clause")
+	}
+
+	tableName := aliasedTable.Expr.(sqlparser.TableName).Name.String()
 
 	// 获取表定义
 	schema, err := e.catalog.GetTable(tableName)
